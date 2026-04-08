@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -61,6 +62,8 @@ type Options struct {
 	TrimVersion bool
 	// If DisableColor, removes every color from logging
 	DisableColor bool
+	// If PrintStackTrace, error log always contains a stack trace
+	PrintStackTrace bool
 }
 
 // New creates a new [Logos].
@@ -81,7 +84,8 @@ func New(out io.Writer, opts *Options) *Logos {
 type key int
 
 const (
-	callerSkipKey key = iota
+	callerSkipKey key = 0
+	stackTraceKey key = 1
 )
 
 var maxLength = max(
@@ -100,16 +104,21 @@ var maxLength = max(
 // The calls to the log is already skipped.
 //
 // See [FromContext] to extract the caller from a [context.Context].
-func NewContext(ctx context.Context, callerSkip int) context.Context {
-	return context.WithValue(ctx, callerSkipKey, callerSkip)
+func NewContext(ctx context.Context, callerSkip int, stackTrace bool) context.Context {
+	ctx = context.WithValue(ctx, callerSkipKey, callerSkip)
+	return context.WithValue(ctx, stackTraceKey, stackTrace)
 }
 
-// [FromContext] returns the caller in the given [context.Context].
+// [FromContext] returns data stored in the given [context.Context].
 //
 // See [NewContext] to create a [context.Context].
-func FromContext(ctx context.Context) (int, bool) {
-	caller, ok := ctx.Value(callerSkipKey).(int)
-	return caller, ok
+func FromContext(ctx context.Context) (caller int, stackTrace bool, ok bool) {
+	caller, ok = ctx.Value(callerSkipKey).(int)
+	if !ok {
+		return
+	}
+	stackTrace, ok = ctx.Value(stackTraceKey).(bool)
+	return
 }
 
 func color(level slog.Level) string {
@@ -160,8 +169,8 @@ func (h *Logos) Handle(ctx context.Context, r slog.Record) error {
 	fmt.Fprint(h.out, "[")
 	h.write(color(r.Level), "%s", r.Level)
 	fmt.Fprint(h.out, "]", sp)
+	caller, stackTrace, ok := FromContext(ctx)
 	if r.PC != 0 {
-		caller, ok := FromContext(ctx)
 		var file string
 		var line int
 		if ok {
@@ -230,6 +239,9 @@ func (h *Logos) Handle(ctx context.Context, r slog.Record) error {
 		fmt.Fprint(h.out, AnsiReset)
 	}
 	fmt.Fprint(h.out, "\n")
+	if (ok && stackTrace) || (h.opts.PrintStackTrace && r.Level >= slog.LevelError) {
+		debug.PrintStack()
+	}
 	return nil
 }
 
@@ -287,6 +299,7 @@ func escapeSpace(s string) string {
 	if strings.Contains(s, " ") {
 		s = fmt.Sprintf("%q", s)
 	}
+	s = strings.ReplaceAll(s, "\n", `\n`)
 	return s
 }
 
