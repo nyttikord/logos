@@ -2,6 +2,7 @@ package logos
 
 import (
 	"context"
+	"encoding"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -56,7 +57,7 @@ type Options struct {
 	// If Align, everything logged will be aligned dynamically.
 	Align bool
 	// If ArgsAreImportant, args are in default terminal color.
-	// If not, they are in AnsiNotImportant (default).
+	// If not, they are in [AnsiNotImportant] (default).
 	ArgsAreImportant bool
 	// If TrimVersion, package versions are removed from the caller part.
 	TrimVersion bool
@@ -64,6 +65,8 @@ type Options struct {
 	DisableColor bool
 	// If PrintStackTrace, error log always contains a stack trace
 	PrintStackTrace bool
+	// If MarshalJSON, types implementing [json.Marshaler] will be marshaled into JSON.
+	MarshalJSON bool
 }
 
 // New creates a new [Logos].
@@ -84,8 +87,9 @@ func New(out io.Writer, opts *Options) *Logos {
 type key int
 
 const (
-	callerSkipKey key = 0
-	stackTraceKey key = 1
+	callerSkipKey  key = 0
+	stackTraceKey  key = 1
+	marshalJSONKey key = 2
 )
 
 var maxLength = max(
@@ -103,21 +107,29 @@ var maxLength = max(
 // n is for the n times precedent call.
 // The calls to the log is already skipped.
 //
+// stackTrace and marshalJSON overrides [Options.MarshalJSON] and [Options.PrintStackTrace] for the current call.
+//
 // See [FromContext] to extract the caller from a [context.Context].
-func NewContext(ctx context.Context, callerSkip int, stackTrace bool) context.Context {
+func NewContext(ctx context.Context, callerSkip int, stackTrace, marshalJSON bool) context.Context {
 	ctx = context.WithValue(ctx, callerSkipKey, callerSkip)
-	return context.WithValue(ctx, stackTraceKey, stackTrace)
+	ctx = context.WithValue(ctx, stackTraceKey, stackTrace)
+	ctx = context.WithValue(ctx, marshalJSONKey, marshalJSON)
+	return ctx
 }
 
 // [FromContext] returns data stored in the given [context.Context].
 //
 // See [NewContext] to create a [context.Context].
-func FromContext(ctx context.Context) (caller int, stackTrace bool, ok bool) {
+func FromContext(ctx context.Context) (caller int, stackTrace, marshalJSON, ok bool) {
 	caller, ok = ctx.Value(callerSkipKey).(int)
 	if !ok {
 		return
 	}
 	stackTrace, ok = ctx.Value(stackTraceKey).(bool)
+	if !ok {
+		return
+	}
+	marshalJSON, ok = ctx.Value(marshalJSONKey).(bool)
 	return
 }
 
@@ -134,29 +146,29 @@ func color(level slog.Level) string {
 }
 
 // Enabled indicates if the given [slog.Level] is enabled.
-func (h *Logos) Enabled(ctx context.Context, level slog.Level) bool {
-	return level >= h.opts.Level.Level()
+func (l *Logos) Enabled(ctx context.Context, level slog.Level) bool {
+	return level >= l.opts.Level.Level()
 }
 
-func (h *Logos) write(color string, format string, values ...any) {
-	if !h.opts.DisableColor {
-		fmt.Fprint(h.out, color)
+func (l *Logos) write(color string, format string, values ...any) {
+	if !l.opts.DisableColor {
+		fmt.Fprint(l.out, color)
 	}
-	fmt.Fprintf(h.out, format, values...)
-	if !h.opts.DisableColor {
-		fmt.Fprint(h.out, AnsiReset)
+	fmt.Fprintf(l.out, format, values...)
+	if !l.opts.DisableColor {
+		fmt.Fprint(l.out, AnsiReset)
 	}
 }
 
 // Handle a [slog.Record].
-func (h *Logos) Handle(ctx context.Context, r slog.Record) error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
+func (l *Logos) Handle(ctx context.Context, r slog.Record) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	if !r.Time.IsZero() {
-		h.write(AnsiNotImportant, "%s", r.Time.Format(time.DateTime))
+		l.write(AnsiNotImportant, "%s", r.Time.Format(time.DateTime))
 	}
 	sp := " "
-	if h.opts.Align {
+	if l.opts.Align {
 		var sb strings.Builder
 		size := maxLength - len(r.Level.String())
 		sb.Grow(size)
@@ -166,10 +178,14 @@ func (h *Logos) Handle(ctx context.Context, r slog.Record) error {
 		}
 		sp = sb.String()
 	}
-	fmt.Fprint(h.out, "[")
-	h.write(color(r.Level), "%s", r.Level)
-	fmt.Fprint(h.out, "]", sp)
-	caller, stackTrace, ok := FromContext(ctx)
+	fmt.Fprint(l.out, "[")
+	l.write(color(r.Level), "%s", r.Level)
+	fmt.Fprint(l.out, "]", sp)
+	caller, stackTrace, marshalJSON, ok := FromContext(ctx)
+	defer func(before bool) {
+		l.opts.MarshalJSON = before
+	}(l.opts.MarshalJSON)
+	l.opts.MarshalJSON = marshalJSON
 	if r.PC != 0 {
 		var file string
 		var line int
@@ -185,7 +201,7 @@ func (h *Logos) Handle(ctx context.Context, r slog.Record) error {
 			// remove package version from log
 			packge := files[len(files)-2]
 			i := strings.Index(packge, "@")
-			if !h.opts.TrimVersion || i == -1 {
+			if !l.opts.TrimVersion || i == -1 {
 				i = len(packge)
 			}
 			file = packge[:i] + "/" + files[len(files)-1]
@@ -193,24 +209,24 @@ func (h *Logos) Handle(ctx context.Context, r slog.Record) error {
 
 		fileLine := fmt.Sprintf("%s:%d", file, line)
 		sp = " "
-		if h.opts.Align {
-			if len(fileLine) > h.opts.MaxFileLineLength {
+		if l.opts.Align {
+			if len(fileLine) > l.opts.MaxFileLineLength {
 				lineStr := strconv.Itoa(line)
-				fileLine = fmt.Sprintf("...%s:%s", file[4+len(lineStr)+len(file)-h.opts.MaxFileLineLength:], lineStr)
+				fileLine = fmt.Sprintf("...%s:%s", file[4+len(lineStr)+len(file)-l.opts.MaxFileLineLength:], lineStr)
 			}
-			*h.maxFileLineLength = max(len(fileLine), *h.maxFileLineLength)
-			for range *h.maxFileLineLength - len(fileLine) {
+			*l.maxFileLineLength = max(len(fileLine), *l.maxFileLineLength)
+			for range *l.maxFileLineLength - len(fileLine) {
 				sp += " "
 			}
 		}
-		h.write(AnsiNotImportant, "%s%s- ", fileLine, sp)
+		l.write(AnsiNotImportant, "%s%s- ", fileLine, sp)
 	}
-	h.write(color(r.Level), "%s", r.Message)
-	if !h.opts.ArgsAreImportant && !h.opts.DisableColor {
-		fmt.Fprint(h.out, AnsiNotImportant)
+	l.write(color(r.Level), "%s", r.Message)
+	if !l.opts.ArgsAreImportant && !l.opts.DisableColor {
+		fmt.Fprint(l.out, AnsiNotImportant)
 	}
 	// Handle state from WithGroup and WithAttrs.
-	goas := h.goas
+	goas := l.goas
 	if r.NumAttrs() == 0 {
 		// If the record has no Attrs, remove groups at the end of the list;
 		// they are empty.
@@ -220,32 +236,32 @@ func (h *Logos) Handle(ctx context.Context, r slog.Record) error {
 	}
 	for _, goa := range goas {
 		if goa.group != "" {
-			fmt.Fprintf(h.out, " %s={", goa.group)
+			fmt.Fprintf(l.out, " %s={", goa.group)
 		}
 		for _, a := range goa.attrs {
-			h.appendAttr(h.out, a)
+			l.appendAttr(l.out, a)
 		}
 		if goa.group != "" {
-			fmt.Fprint(h.out, "}")
+			fmt.Fprint(l.out, "}")
 		}
 
 	}
 	r.Attrs(func(a slog.Attr) bool {
-		h.appendAttr(h.out, a)
-		fmt.Fprint(h.out, " ")
+		l.appendAttr(l.out, a)
+		fmt.Fprint(l.out, " ")
 		return true
 	})
-	if !h.opts.DisableColor {
-		fmt.Fprint(h.out, AnsiReset)
+	if !l.opts.DisableColor {
+		fmt.Fprint(l.out, AnsiReset)
 	}
-	fmt.Fprint(h.out, "\n")
-	if (ok && stackTrace) || (h.opts.PrintStackTrace && r.Level >= slog.LevelError) {
+	fmt.Fprint(l.out, "\n")
+	if (ok && stackTrace) || (l.opts.PrintStackTrace && r.Level >= slog.LevelError) {
 		debug.PrintStack()
 	}
 	return nil
 }
 
-func (h *Logos) appendAttr(buf io.Writer, a slog.Attr) {
+func (l *Logos) appendAttr(w io.Writer, a slog.Attr) {
 	// Resolve the Attr's value before doing anything else.
 	a.Value = a.Value.Resolve()
 	// Ignore empty Attrs.
@@ -253,26 +269,40 @@ func (h *Logos) appendAttr(buf io.Writer, a slog.Attr) {
 		return
 	}
 	a.Key = escapeSpace(a.Key)
-	fmt.Fprintf(buf, "%s=", a.Key)
+	fmt.Fprintf(w, "%s=", a.Key)
 	switch val := a.Value.Any().(type) {
 	case fmt.Stringer:
-		fmt.Fprint(buf, escapeSpace(val.String()))
+		fmt.Fprint(w, escapeSpace(val.String()))
 		return
+	case encoding.TextMarshaler:
+		t, err := val.MarshalText()
+		if err == nil {
+			fmt.Fprint(w, escapeSpace(string(t)))
+			return
+		}
 	case json.RawMessage:
-		fmt.Fprint(buf, escapeSpace(string(val)))
+		fmt.Fprint(w, escapeSpace(string(val)))
 		return
+	case json.Marshaler:
+		if l.opts.MarshalJSON {
+			b, err := val.MarshalJSON()
+			if err == nil {
+				fmt.Fprint(w, escapeSpace(string(b)))
+				return
+			}
+		}
 	case []byte:
-		fmt.Fprint(buf, escapeSpace(string(val)))
+		fmt.Fprint(w, escapeSpace(string(val)))
 		return
 	case error:
-		fmt.Fprint(buf, escapeSpace(val.Error()))
+		fmt.Fprint(w, escapeSpace(val.Error()))
 		return
 	}
 	switch a.Value.Kind() {
 	case slog.KindString:
-		fmt.Fprint(buf, escapeSpace(a.Value.String()))
+		fmt.Fprint(w, escapeSpace(a.Value.String()))
 	case slog.KindTime:
-		fmt.Fprint(buf, a.Value.Time().Format(time.RFC3339))
+		fmt.Fprint(w, a.Value.Time().Format(time.RFC3339))
 	case slog.KindGroup:
 		attrs := a.Value.Group()
 		// Ignore empty groups.
@@ -280,18 +310,18 @@ func (h *Logos) appendAttr(buf io.Writer, a slog.Attr) {
 			return
 		}
 		if a.Key != "" {
-			fmt.Fprintf(buf, "%s=", a.Key)
+			fmt.Fprintf(w, "%s=", a.Key)
 		}
-		fmt.Fprint(buf, "{")
+		fmt.Fprint(w, "{")
 		for i, ga := range attrs {
 			if i > 0 {
-				fmt.Fprint(buf, " ")
+				fmt.Fprint(w, " ")
 			}
-			h.appendAttr(buf, ga)
+			l.appendAttr(w, ga)
 		}
-		fmt.Fprint(buf, "}")
+		fmt.Fprint(w, "}")
 	default:
-		fmt.Fprintf(buf, "%v", a.Value.Any())
+		fmt.Fprintf(w, "%v", a.Value.Any())
 	}
 }
 
@@ -309,24 +339,24 @@ type groupOrAttrs struct {
 	attrs []slog.Attr // attrs if non-empty
 }
 
-func (h *Logos) withGroupOrAttrs(goa groupOrAttrs) *Logos {
-	h2 := *h
-	h2.goas = make([]groupOrAttrs, len(h.goas)+1)
-	copy(h2.goas, h.goas)
+func (l *Logos) withGroupOrAttrs(goa groupOrAttrs) *Logos {
+	h2 := *l
+	h2.goas = make([]groupOrAttrs, len(l.goas)+1)
+	copy(h2.goas, l.goas)
 	h2.goas[len(h2.goas)-1] = goa
 	return &h2
 }
 
-func (h *Logos) WithGroup(name string) slog.Handler {
+func (l *Logos) WithGroup(name string) slog.Handler {
 	if name == "" {
-		return h
+		return l
 	}
-	return h.withGroupOrAttrs(groupOrAttrs{group: name})
+	return l.withGroupOrAttrs(groupOrAttrs{group: name})
 }
 
-func (h *Logos) WithAttrs(attrs []slog.Attr) slog.Handler {
+func (l *Logos) WithAttrs(attrs []slog.Attr) slog.Handler {
 	if len(attrs) == 0 {
-		return h
+		return l
 	}
-	return h.withGroupOrAttrs(groupOrAttrs{attrs: attrs})
+	return l.withGroupOrAttrs(groupOrAttrs{attrs: attrs})
 }
