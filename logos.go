@@ -165,7 +165,7 @@ func (l *Logos) Handle(ctx context.Context, r slog.Record) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if !r.Time.IsZero() {
-		l.write(AnsiNotImportant, "%s", r.Time.Format(time.DateTime))
+		l.write(AnsiNotImportant, "%s ", r.Time.Format(time.DateTime))
 	}
 	sp := " "
 	if l.opts.Align {
@@ -248,10 +248,10 @@ func (l *Logos) Handle(ctx context.Context, r slog.Record) error {
 	}
 	r.Attrs(func(a slog.Attr) bool {
 		l.appendAttr(l.out, a)
-		fmt.Fprint(l.out, " ")
 		return true
 	})
 	if !l.opts.DisableColor {
+		fmt.Fprint(l.out, " ")
 		fmt.Fprint(l.out, AnsiReset)
 	}
 	fmt.Fprint(l.out, "\n")
@@ -268,6 +268,7 @@ func (l *Logos) appendAttr(w io.Writer, a slog.Attr) {
 	if a.Equal(slog.Attr{}) {
 		return
 	}
+	fmt.Fprint(w, " ")
 	a.Key = escapeSpace(a.Key)
 	fmt.Fprintf(w, "%s=", a.Key)
 	switch val := a.Value.Any().(type) {
@@ -313,10 +314,7 @@ func (l *Logos) appendAttr(w io.Writer, a slog.Attr) {
 			fmt.Fprintf(w, "%s=", a.Key)
 		}
 		fmt.Fprint(w, "{")
-		for i, ga := range attrs {
-			if i > 0 {
-				fmt.Fprint(w, " ")
-			}
+		for _, ga := range attrs {
 			l.appendAttr(w, ga)
 		}
 		fmt.Fprint(w, "}")
