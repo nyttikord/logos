@@ -59,6 +59,8 @@ type Options struct {
 	ArgsAreImportant bool
 	// If TrimVersion, package versions are removed from the caller part.
 	TrimVersion bool
+	// If DisableColor, removes every color from logging
+	DisableColor bool
 }
 
 // New creates a new [Logos].
@@ -127,13 +129,22 @@ func (h *Logos) Enabled(ctx context.Context, level slog.Level) bool {
 	return level >= h.opts.Level.Level()
 }
 
+func (h *Logos) write(color string, format string, values ...any) {
+	if !h.opts.DisableColor {
+		fmt.Fprint(h.out, color)
+	}
+	fmt.Fprintf(h.out, format, values...)
+	if !h.opts.DisableColor {
+		fmt.Fprint(h.out, AnsiReset)
+	}
+}
+
 // Handle a [slog.Record].
 func (h *Logos) Handle(ctx context.Context, r slog.Record) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	buf := make([]byte, 0, 1024)
 	if !r.Time.IsZero() {
-		buf = fmt.Appendf(buf, "%s%s%s ", AnsiNotImportant, r.Time.Format(time.DateTime), AnsiReset)
+		h.write(AnsiNotImportant, "%s", r.Time.Format(time.DateTime))
 	}
 	sp := " "
 	if h.opts.Align {
@@ -146,7 +157,9 @@ func (h *Logos) Handle(ctx context.Context, r slog.Record) error {
 		}
 		sp = sb.String()
 	}
-	buf = fmt.Appendf(buf, "[%s%s%s]%s ", color(r.Level), r.Level, AnsiReset, sp)
+	fmt.Fprint(h.out, "[")
+	h.write(color(r.Level), "%s", r.Level)
+	fmt.Fprint(h.out, "]", sp)
 	if r.PC != 0 {
 		caller, ok := FromContext(ctx)
 		var file string
@@ -181,11 +194,11 @@ func (h *Logos) Handle(ctx context.Context, r slog.Record) error {
 				sp += " "
 			}
 		}
-		buf = fmt.Appendf(buf, "%s%s%s- %s", AnsiNotImportant, fileLine, sp, AnsiReset)
+		h.write(AnsiNotImportant, "%s%s- ", fileLine, sp)
 	}
-	buf = fmt.Appendf(buf, "%s%s%s", color(r.Level), r.Message, AnsiReset)
-	if !h.opts.ArgsAreImportant {
-		buf = fmt.Appendf(buf, "%s", AnsiNotImportant)
+	h.write(color(r.Level), "%s", r.Message)
+	if !h.opts.ArgsAreImportant && !h.opts.DisableColor {
+		fmt.Fprint(h.out, AnsiNotImportant)
 	}
 	// Handle state from WithGroup and WithAttrs.
 	goas := h.goas
@@ -198,69 +211,76 @@ func (h *Logos) Handle(ctx context.Context, r slog.Record) error {
 	}
 	for _, goa := range goas {
 		if goa.group != "" {
-			buf = fmt.Appendf(buf, " %s={", goa.group)
-		} else {
-			for _, a := range goa.attrs {
-				buf = h.appendAttr(buf, a)
-			}
-			//buf = fmt.Appendf(buf, "}") // I don't know where I should put it
+			fmt.Fprintf(h.out, " %s={", goa.group)
 		}
+		for _, a := range goa.attrs {
+			h.appendAttr(h.out, a)
+		}
+		if goa.group != "" {
+			fmt.Fprint(h.out, "}")
+		}
+
 	}
 	r.Attrs(func(a slog.Attr) bool {
-		buf = h.appendAttr(buf, a)
+		h.appendAttr(h.out, a)
+		fmt.Fprint(h.out, " ")
 		return true
 	})
-	buf = fmt.Appendf(buf, "%s\n", AnsiReset)
-	_, err := h.out.Write(buf)
-	return err
+	if !h.opts.DisableColor {
+		fmt.Fprint(h.out, AnsiReset)
+	}
+	fmt.Fprint(h.out, "\n")
+	return nil
 }
 
-func (h *Logos) appendAttr(buf []byte, a slog.Attr) []byte {
+func (h *Logos) appendAttr(buf io.Writer, a slog.Attr) {
 	// Resolve the Attr's value before doing anything else.
 	a.Value = a.Value.Resolve()
 	// Ignore empty Attrs.
 	if a.Equal(slog.Attr{}) {
-		return buf
+		return
 	}
-	buf = fmt.Appendf(buf, " ")
 	a.Key = escapeSpace(a.Key)
-	buf = fmt.Appendf(buf, "%s=", a.Key)
-	if val, ok := a.Value.Any().(fmt.Stringer); ok {
-		return fmt.Appendf(buf, "%s", escapeSpace(val.String()))
-	}
-	if val, ok := a.Value.Any().([]byte); ok {
-		return fmt.Appendf(buf, "%s", escapeSpace(string(val)))
-	}
-	if val, ok := a.Value.Any().(json.RawMessage); ok {
-		return fmt.Appendf(buf, "%s", escapeSpace(string(val)))
-	}
-	if val, ok := a.Value.Any().(error); ok {
-		return fmt.Appendf(buf, "%s", escapeSpace(val.Error()))
+	fmt.Fprintf(buf, "%s=", a.Key)
+	switch val := a.Value.Any().(type) {
+	case fmt.Stringer:
+		fmt.Fprint(buf, escapeSpace(val.String()))
+		return
+	case json.RawMessage:
+		fmt.Fprint(buf, escapeSpace(string(val)))
+		return
+	case []byte:
+		fmt.Fprint(buf, escapeSpace(string(val)))
+		return
+	case error:
+		fmt.Fprint(buf, escapeSpace(val.Error()))
+		return
 	}
 	switch a.Value.Kind() {
 	case slog.KindString:
-		buf = fmt.Appendf(buf, "%s", escapeSpace(a.Value.String()))
+		fmt.Fprint(buf, escapeSpace(a.Value.String()))
 	case slog.KindTime:
-		buf = fmt.Appendf(buf, "%s", a.Value.Time().Format(time.RFC3339))
+		fmt.Fprint(buf, a.Value.Time().Format(time.RFC3339))
 	case slog.KindGroup:
 		attrs := a.Value.Group()
 		// Ignore empty groups.
 		if len(attrs) == 0 {
-			return buf
+			return
 		}
 		if a.Key != "" {
-			buf = fmt.Appendf(buf, "%s={", a.Key)
+			fmt.Fprintf(buf, "%s=", a.Key)
 		}
-		for _, ga := range attrs {
-			buf = h.appendAttr(buf, ga)
+		fmt.Fprint(buf, "{")
+		for i, ga := range attrs {
+			if i > 0 {
+				fmt.Fprint(buf, " ")
+			}
+			h.appendAttr(buf, ga)
 		}
-		if a.Key != "" {
-			buf[len(buf)-1] = '}' // replace last space by }
-		}
+		fmt.Fprint(buf, "}")
 	default:
-		buf = fmt.Appendf(buf, "%v", a.Value.Any())
+		fmt.Fprintf(buf, "%v", a.Value.Any())
 	}
-	return buf
 }
 
 func escapeSpace(s string) string {
