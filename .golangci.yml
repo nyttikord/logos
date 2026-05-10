@@ -1,0 +1,12 @@
+version: "2"
+
+linters:
+  settings:
+    errcheck:
+      exclude-functions:
+        - (*flag.FlagSet).Parse
+        - fmt.Fprintln
+        - fmt.Fprintf
+        - fmt.Fprint
+        - (*os.File).Write
+        - (net/http.ResponseWriter).Write
