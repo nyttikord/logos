@@ -15,7 +15,7 @@ type Logos struct {
 	opts              Options
 	goas              []groupOrAttrs
 	mu                sync.Mutex
-	maxFileLineLength *int
+	maxFileLineLength int
 	handler           Handler
 }
 
@@ -49,7 +49,7 @@ type Options struct {
 // See [NewColor].
 // See [NewSyslog].
 func New(h Handler, opts *Options) *Logos {
-	l := &Logos{handler: h, maxFileLineLength: new(int)}
+	l := &Logos{handler: h, maxFileLineLength: 0}
 	if opts != nil {
 		l.opts = *opts
 	}
@@ -88,13 +88,6 @@ const (
 	callerSkipKey  key = 0
 	stackTraceKey  key = 1
 	marshalJSONKey key = 2
-)
-
-var maxLength = max(
-	len(slog.LevelDebug.String()),
-	len(slog.LevelInfo.String()),
-	len(slog.LevelWarn.String()),
-	len(slog.LevelError.String()),
 )
 
 // NewContext returns a new [context.Context] with the callerSkip given.

@@ -54,7 +54,7 @@ func (c ColorHandler) Write(opts Options, level slog.Level, time, file, content,
 		colorLevel = AnsiReset
 	}
 	fmt.Fprint(c.out, "[")
-	c.writeColor(opts, colorLevel, time)
+	c.writeColor(opts, colorLevel, level.String())
 	fmt.Fprint(c.out, "]")
 	c.writeColor(opts, AnsiNotImportant, file+"- ")
 	c.writeColor(opts, colorLevel, content)

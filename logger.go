@@ -13,13 +13,20 @@ import (
 	"time"
 )
 
+var maxLength = max(
+	len(slog.LevelDebug.String()),
+	len(slog.LevelInfo.String()),
+	len(slog.LevelWarn.String()),
+	len(slog.LevelError.String()),
+)
+
 // Handle a [slog.Record].
 func (l *Logos) Handle(ctx context.Context, r slog.Record) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	var t string
 	if !r.Time.IsZero() {
-		t = r.Time.Format(time.DateTime)
+		t = r.Time.Format(time.DateTime) + " "
 	}
 	sp := " "
 	if l.opts.Align {
@@ -27,10 +34,9 @@ func (l *Logos) Handle(ctx context.Context, r slog.Record) error {
 		size := maxLength - len(r.Level.String())
 		sb.Grow(size)
 		for range size {
-			// always returns a nil error
-			sb.WriteString(" ")
+			sb.WriteRune(' ')
 		}
-		sp = sb.String()
+		sp += sb.String()
 	}
 	caller, stackTrace, marshalJSON, ok := FromContext(ctx)
 	defer func(before bool) {
@@ -75,8 +81,8 @@ func (l *Logos) Handle(ctx context.Context, r slog.Record) error {
 		sb.WriteString(lineStr)
 		sb.WriteRune(' ')
 		if l.opts.Align {
-			*l.maxFileLineLength = max(ln, *l.maxFileLineLength)
-			add := *l.maxFileLineLength - ln
+			l.maxFileLineLength = max(ln, l.maxFileLineLength)
+			add := l.maxFileLineLength - ln
 			sb.Grow(add)
 			for range add {
 				sb.WriteRune(' ')
