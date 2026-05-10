@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"log/syslog"
 	"os"
+	"strings"
 )
 
 // Handler writes the content of [Logos].
@@ -40,7 +42,17 @@ func (c ColorHandler) Write(opts Options, level slog.Level, time, file, content,
 	if time != "" {
 		c.writeColor(opts, AnsiNotImportant, time)
 	}
-	colorLevel := c.color(level)
+	var colorLevel string
+	switch {
+	case level >= slog.LevelError:
+		colorLevel = AnsiRed
+	case level >= slog.LevelWarn:
+		colorLevel = AnsiYellow
+	case level >= slog.LevelInfo:
+		colorLevel = AnsiGreen
+	default:
+		colorLevel = AnsiReset
+	}
 	fmt.Fprint(c.out, "[")
 	c.writeColor(opts, colorLevel, time)
 	fmt.Fprint(c.out, "]")
@@ -65,19 +77,6 @@ func (c ColorHandler) writeColor(opts Options, color, msg string) {
 		return
 	}
 	fmt.Fprintf(c.out, "%s%s%s", color, msg, AnsiReset)
-}
-
-func (c ColorHandler) color(level slog.Level) string {
-	switch {
-	case level >= slog.LevelError:
-		return AnsiRed
-	case level >= slog.LevelWarn:
-		return AnsiYellow
-	case level >= slog.LevelInfo:
-		return AnsiGreen
-	default:
-		return AnsiReset
-	}
 }
 
 // groupOrAttrs holds either a group name or a list of slog.Attrs.
@@ -106,4 +105,33 @@ func (l *Logos) WithAttrs(attrs []slog.Attr) slog.Handler {
 		return l
 	}
 	return l.withGroupOrAttrs(groupOrAttrs{attrs: attrs})
+}
+
+type SyslogHandler struct {
+	log *syslog.Writer
+}
+
+func (s SyslogHandler) Write(opts Options, level slog.Level, time, file, content, arg string, stack []byte) {
+	var fn func(string) error
+	switch {
+	case level <= slog.LevelInfo:
+		fn = s.log.Debug
+	case level <= slog.LevelWarn:
+		fn = s.log.Info
+	case level <= slog.LevelError:
+		fn = s.log.Warning
+	default:
+		fn = s.log.Err
+	}
+	var sb strings.Builder
+	sb.Grow(len(file) + len(content) + len(arg) + 2)
+	sb.WriteString(file)
+	sb.WriteString("- ")
+	sb.WriteString(content)
+	sb.WriteString(arg)
+	if stack != nil {
+		sb.WriteRune('\n')
+		sb.Write(stack)
+	}
+	_ = fn(sb.String())
 }

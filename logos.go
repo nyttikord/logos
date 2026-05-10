@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"log/syslog"
 	"sync"
 )
 
@@ -46,6 +47,7 @@ type Options struct {
 // New creates a new [Logos] with [Handler].
 //
 // See [NewColor].
+// See [NewSyslog].
 func New(h Handler, opts *Options) *Logos {
 	l := &Logos{handler: h, maxFileLineLength: new(int)}
 	if opts != nil {
@@ -63,11 +65,24 @@ func New(h Handler, opts *Options) *Logos {
 // NewColor creates a new [Logos] with [ColorHandler].
 //
 // See [New].
+// See [NewSyslog].
 func NewColor(out io.Writer, opts *Options) *Logos {
 	return New(ColorHandler{out: out}, opts)
 }
 
-type key int
+// NewSyslog creates a new [Logos] with [SyslogHandler].
+//
+// See [New].
+// See [NewColor].
+func NewSyslog(tag string, facility syslog.Priority, opts *Options) (*Logos, error) {
+	log, err := syslog.New(facility, tag)
+	if err != nil {
+		return nil, err
+	}
+	return New(SyslogHandler{log: log}, opts), nil
+}
+
+type key uint8
 
 const (
 	callerSkipKey  key = 0
