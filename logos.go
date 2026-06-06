@@ -79,18 +79,19 @@ func NewSyslog(tag string, facility syslog.Priority, opts *Options) (*Logos, err
 	if err != nil {
 		return nil, err
 	}
-	return New(SyslogHandler{log: log}, opts), nil
+	return New(SyslogHandler{log, tag}, opts), nil
 }
 
 type key uint8
 
 const (
-	callerSkipKey  key = 0
-	stackTraceKey  key = 1
-	marshalJSONKey key = 2
+	callerSkipKey key = iota
+	stackTraceKey
+	marshalJSONKey
+	syslogFacility
 )
 
-// NewContext returns a new [context.Context] with the callerSkip given.
+// NewContext returns a new [context.Context] with the given options.
 //
 // callerSkip is the number of runtime calls to log before this one.
 // 0 is for the current.
@@ -100,7 +101,8 @@ const (
 //
 // stackTrace and marshalJSON overrides [Options.MarshalJSON] and [Options.PrintStackTrace] for the current call.
 //
-// See [FromContext] to extract the caller from a [context.Context].
+// See [FromContext] to extract the caller from a context.
+// See [NewSyslogContext] to create a context for a [SyslogHandler].
 func NewContext(ctx context.Context, callerSkip int, stackTrace, marshalJSON bool) context.Context {
 	ctx = context.WithValue(ctx, callerSkipKey, callerSkip)
 	ctx = context.WithValue(ctx, stackTraceKey, stackTrace)
@@ -110,7 +112,7 @@ func NewContext(ctx context.Context, callerSkip int, stackTrace, marshalJSON boo
 
 // [FromContext] returns data stored in the given [context.Context].
 //
-// See [NewContext] to create a [context.Context].
+// See [NewContext] to create a context.
 func FromContext(ctx context.Context) (caller int, stackTrace, marshalJSON, ok bool) {
 	caller, ok = ctx.Value(callerSkipKey).(int)
 	if !ok {
@@ -127,4 +129,22 @@ func FromContext(ctx context.Context) (caller int, stackTrace, marshalJSON, ok b
 // Enabled indicates if the given [slog.Level] is enabled.
 func (l *Logos) Enabled(ctx context.Context, level slog.Level) bool {
 	return level >= l.opts.Level.Level()
+}
+
+// NewSyslogContext creates a [context.Context] for the [SyslogHandler].
+//
+// facility is the syslog facility to used instead of the default one.
+//
+// See [FromSyslogContext] to obtain the data contained in the context.
+// See [NewContext] to create a more general context.
+func NewSyslogContext(parent context.Context, facility syslog.Priority) context.Context {
+	return context.WithValue(parent, syslogFacility, facility)
+}
+
+// FromSyslogContext returns the data contained in a [SyslogHandler] specific [context.Context].
+//
+// See [NewSyslogContext] to create a new context.
+func FromSyslogContext(ctx context.Context) (facility syslog.Priority, found bool) {
+	facility, found = ctx.Value(syslogFacility).(syslog.Priority)
+	return
 }

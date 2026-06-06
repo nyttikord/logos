@@ -1,6 +1,7 @@
 package logos
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
@@ -11,7 +12,7 @@ import (
 
 // Handler writes the content of [Logos].
 type Handler interface {
-	Write(opts Options, level slog.Level, time, file, content, arg string, stack []byte)
+	Write(ctx context.Context, opts Options, level slog.Level, time, file, content, arg string, stack []byte)
 }
 
 const (
@@ -38,7 +39,9 @@ type ColorHandler struct {
 	out io.Writer
 }
 
-func (c ColorHandler) Write(opts Options, level slog.Level, time, file, content, arg string, stack []byte) {
+func (c ColorHandler) Write(
+	ctx context.Context, opts Options, level slog.Level, time, file, content, arg string, stack []byte,
+) {
 	if time != "" {
 		c.writeColor(opts, AnsiNotImportant, time)
 	}
@@ -109,19 +112,32 @@ func (l *Logos) WithAttrs(attrs []slog.Attr) slog.Handler {
 
 type SyslogHandler struct {
 	log *syslog.Writer
+	tag string
 }
 
-func (s SyslogHandler) Write(opts Options, level slog.Level, time, file, content, arg string, stack []byte) {
+func (s SyslogHandler) Write(
+	ctx context.Context, opts Options, level slog.Level, time, file, content, arg string, stack []byte,
+) {
+	log := s.log
+	if f, ok := FromSyslogContext(ctx); ok {
+		l, err := syslog.New(f, s.tag)
+		if err == nil {
+			log = l
+			defer log.Close()
+		} else {
+			_ = log.Err("cannot open new syslog connection, using default one")
+		}
+	}
 	var fn func(string) error
 	switch {
 	case level <= slog.LevelInfo:
-		fn = s.log.Debug
+		fn = log.Debug
 	case level <= slog.LevelWarn:
-		fn = s.log.Info
+		fn = log.Info
 	case level <= slog.LevelError:
-		fn = s.log.Warning
+		fn = log.Warning
 	default:
-		fn = s.log.Err
+		fn = log.Err
 	}
 	var sb strings.Builder
 	sb.Grow(len(file) + len(content) + len(arg) + 2)

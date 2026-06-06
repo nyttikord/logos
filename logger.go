@@ -122,7 +122,10 @@ func (l *Logos) Handle(ctx context.Context, r slog.Record) error {
 	if (ok && stackTrace) || (l.opts.PrintStackTrace && r.Level >= slog.LevelError) {
 		stack = debug.Stack()
 	}
-	l.handler.Write(l.opts, r.Level, t, fileLine, r.Message, arg.String(), stack)
+	l.handler.Write(
+		ctx, l.opts, r.Level,
+		t, fileLine, r.Message,
+		arg.String(), stack)
 	return nil
 }
 
