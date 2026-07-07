@@ -130,11 +130,11 @@ func (s SyslogHandler) Write(
 	}
 	var fn func(string) error
 	switch {
-	case level <= slog.LevelInfo:
+	case level < slog.LevelInfo:
 		fn = log.Debug
-	case level <= slog.LevelWarn:
+	case level < slog.LevelWarn:
 		fn = log.Info
-	case level <= slog.LevelError:
+	case level < slog.LevelError:
 		fn = log.Warning
 	default:
 		fn = log.Err
